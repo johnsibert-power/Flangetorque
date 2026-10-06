@@ -1,0 +1,13 @@
+{
+  "name": "flangetorque",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Flange torque walkthrough for Meta Ray-Ban Display",
+  "scripts": {
+    "dev": "serve -l 8777 .",
+    "start": "serve -l 8777 ."
+  },
+  "devDependencies": {
+    "serve": "^14.2.4"
+  }
+}

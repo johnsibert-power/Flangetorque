@@ -7,7 +7,8 @@ final circular check) and records a confirmation for every bolt.
 Single file, no build step: `index.html`.
 
 ## Run locally
-    python3 -m http.server 8777
+    npm install
+    npm run dev
 Open http://localhost:8777/ in Chrome with the Meta Ray-Ban Display Simulator extension.
 
 ## Deploy
