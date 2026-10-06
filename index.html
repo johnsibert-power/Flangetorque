@@ -318,11 +318,17 @@ function speak(text) {
     speechSynthesis.speak(u);
   } catch (e) {}
 }
-const sayBolt = () => speak(`Bolt ${currentBolt()}, ${torqueFor(state.pass)} ${JOB.unit === 'ft·lb' ? 'foot pounds' : JOB.unit}`);
+const UNIT_SPOKEN = JOB.unit === 'ft·lb' ? 'foot pounds' : JOB.unit;
+const boltLine = () => `Bolt ${currentBolt()}, ${torqueFor(state.pass)} ${UNIT_SPOKEN}.`;
+const sayBolt = () => speak(boltLine());
 
-function record(ok) {
-  state.events.push({ pass: state.pass, bolt: currentBolt(), ok, t: Date.now() });
+// Returns the line to announce; callers decide who speaks it (page TTS or Meta AI).
+function record(ok, reason) {
+  const event = { pass: state.pass, bolt: currentBolt(), ok, t: Date.now() };
+  if (reason) event.reason = reason;
+  state.events.push(event);
   state.idx++;
+  let passChanged = false;
   if (state.idx >= JOB.bolts) {
     state.idx = 0;
     state.pass++;
@@ -330,18 +336,15 @@ function record(ok) {
       state.pass = JOB.passes.length - 1; state.idx = JOB.bolts - 1;
       state.completedAt = Date.now();
       saveState();
-      speak('Flange complete. Record saved.');
       go({ screen: 'done' }, true);
-      return;
+      return 'Flange complete. Record saved.';
     }
-    speak(`${pass().name}. ${torqueFor(state.pass)} foot pounds.`);
-    setTimeout(sayBolt, 1800);
-  } else {
-    sayBolt();
+    passChanged = true;
   }
   saveState();
   renderWork();
   $('confirmBtn').focus();
+  return passChanged ? `${pass().name}. ${boltLine()}` : boltLine();
 }
 
 /* ────────────────────────────────────────────────────────────
@@ -356,6 +359,7 @@ function renderScreen(st) {
   if (s === 'work') renderWork();
   if (s === 'done') renderDone();
   show(s);
+  registerVoiceTools(s);
 }
 function go(st, replace) {
   if (replace) history.replaceState(st, ''); else history.pushState(st, '');
@@ -403,9 +407,103 @@ $('voiceBtn').addEventListener('click', () => {
   if (state.voice) speak('Voice guidance on');
 });
 $('resetBtn').addEventListener('click', () => { state = freshState(); saveState(); renderHome(); $('startBtn').focus(); });
-$('confirmBtn').addEventListener('click', () => record(true));
-$('flagBtn').addEventListener('click', () => record(false));
+$('confirmBtn').addEventListener('click', () => speak(record(true)));
+$('flagBtn').addEventListener('click', () => speak(record(false)));
 $('finishBtn').addEventListener('click', () => { history.back(); });
+
+/* ────────────────────────────────────────────────────────────
+   Voice control — WebMCP tools Meta AI calls on "Hey Meta, …".
+   Meta AI maps free-form speech to a tool, so descriptions list
+   example phrasings rather than required commands. Each tool
+   mirrors a button; tools are registered per screen.
+   ──────────────────────────────────────────────────────────── */
+const STOP_AND_WAIT = 'Say the "say" line as one short sentence, then stop and wait for the wearer.';
+const reply = (say, facts) => ({ ...facts, say, next_action: STOP_AND_WAIT });
+
+const workStatus = () => ({
+  pass: pass().name,
+  bolt: currentBolt(),
+  position: `${state.idx + 1} of ${JOB.bolts}`,
+  torque: `${torqueFor(state.pass)} ${JOB.unit}`,
+});
+
+const BOLT_PARAM = {
+  type: 'number',
+  description: 'Only if the wearer said a bolt number. Leave out for "done", "next", "got it", and similar.',
+};
+
+// A spoken number that disagrees with the screen most likely means the wrong bolt was tightened.
+function wrongBolt(input) {
+  const said = Number.parseInt(String(input?.bolt ?? ''), 10);
+  if (Number.isNaN(said) || said === currentBolt()) return null;
+  return reply(`That's bolt ${currentBolt()} on screen, not ${said}. Nothing recorded.`,
+    { error: 'wrong_bolt', recorded: false, ...workStatus() });
+}
+
+function recordByVoice(ok, input) {
+  if (state.completedAt) return reply('This flange is already complete.', { error: 'complete', recorded: false });
+  const mismatch = wrongBolt(input);
+  if (mismatch) return mismatch;
+  const reason = typeof input?.reason === 'string' ? input.reason.trim().slice(0, 200) : '';
+  const say = record(ok, reason);
+  return reply(say, { recorded: true, complete: Boolean(state.completedAt), ...(state.completedAt ? {} : workStatus()) });
+}
+
+const VOICE_TOOLS = {
+  home: [{
+    name: 'start_job',
+    description: 'Start or resume the flange torque job, or open the finished record. ' +
+      'Use for "start", "begin", "resume", "continue", "let\'s go", and similar.',
+    async execute() {
+      if (state.completedAt) { go({ screen: 'done' }); return reply('Here is the record.', { screen: 'done' }); }
+      go({ screen: 'work' });
+      return reply(boltLine(), { screen: 'work', ...workStatus() });
+    },
+  }],
+  work: [{
+    name: 'bolt_done',
+    description: 'Record the bolt on screen as torqued and move to the next one. ' +
+      'Use for any way of saying the current bolt is finished: "done", "next", "got it", "good", "torqued", or naming the bolt.',
+    inputSchema: { type: 'object', properties: { bolt: BOLT_PARAM } },
+    async execute(input) { return recordByVoice(true, input); },
+  }, {
+    name: 'bolt_flag',
+    description: 'Flag the bolt on screen as a problem, record it, and move to the next one. ' +
+      'Use when the wearer says to flag it, or that a bolt is bad, damaged, stripped, or will not take torque.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        bolt: BOLT_PARAM,
+        reason: { type: 'string', description: 'The problem in the wearer\'s own words, if they gave one.' },
+      },
+    },
+    async execute(input) { return recordByVoice(false, input); },
+  }, {
+    name: 'job_status',
+    description: 'Tell the wearer the current pass, bolt, and torque. ' +
+      'Use for "where am I", "which bolt", "what torque", "repeat that", and similar.',
+    annotations: { readOnlyHint: true },
+    async execute() { return reply(`${pass().name}. ${boltLine()}`, workStatus()); },
+  }],
+  done: [{
+    name: 'finish_job',
+    description: 'Close the finished record and return to the job screen. ' +
+      'Use for "done", "close", "finish", "go back", and similar.',
+    async execute() { history.back(); return reply('Back to the job.', { screen: 'home' }); },
+  }],
+};
+
+let voiceScope = null;
+let voiceScreen = null;
+function registerVoiceTools(screen) {
+  if (!document.modelContext || screen === voiceScreen) return;
+  voiceScope?.abort();
+  voiceScope = new AbortController();
+  voiceScreen = screen;
+  for (const tool of VOICE_TOOLS[screen] || []) {
+    document.modelContext.registerTool(tool, { signal: voiceScope.signal }).catch(() => {});
+  }
+}
 
 renderScreen(HOME);
 </script>
