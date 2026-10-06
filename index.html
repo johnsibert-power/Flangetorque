@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=600, height=600, initial-scale=1.0, user-scalable=no">
+  <meta name="description" content="Guided flange bolt torque sequence with step-by-step verification">
+  <meta name="mrbd-web-app-capable" content="yes">
+  <title>Flange torque</title>
+  <style>
+    :root {
+      --ink: #f4f6f8;
+      --dim: #8a94a0;
+      --line: #3a434d;
+      --now: #35d6ff;
+      --ok: #52e07a;
+      --flag: #ffb347;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { background: #000; }
+    body {
+      width: 600px; height: 600px; overflow: hidden;
+      color: var(--ink);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      font-size: 22px; line-height: 1.25;
+      -webkit-font-smoothing: antialiased;
+    }
+    .screen { position: absolute; inset: 0; display: none; flex-direction: column; padding: 36px 40px 32px; }
+    .screen.active { display: flex; }
+
+    /* Focusable controls: D-pad lands here */
+    .focusable {
+      font: inherit; color: var(--ink); background: transparent;
+      border: 3px solid var(--line); border-radius: 18px;
+      min-height: 88px; padding: 0 28px;
+      font-size: 28px; font-weight: 600; text-align: left;
+      display: flex; align-items: center; justify-content: space-between;
+      transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
+    }
+    .focusable:focus, .focusable.focused {
+      outline: none; border-color: var(--now);
+      box-shadow: 0 0 0 3px rgba(53,214,255,.25), 0 0 28px rgba(53,214,255,.35);
+      background: rgba(53,214,255,.08);
+    }
+    .focusable.primary { border-color: #5a6572; }
+    .focusable.primary:focus, .focusable.primary.focused { border-color: var(--ok); background: rgba(82,224,122,.1);
+      box-shadow: 0 0 0 3px rgba(82,224,122,.25), 0 0 28px rgba(82,224,122,.35); }
+    .focusable .hint { font-size: 20px; font-weight: 400; color: var(--dim); }
+    .focusable:disabled { opacity: .35; }
+    @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+    /* Job screen */
+    h1 { font-size: 40px; font-weight: 700; letter-spacing: -0.01em; }
+    .sub { color: var(--dim); font-size: 22px; margin-top: 6px; display: flex; gap: 22px; }
+    .facts { margin: 28px 0 auto; display: grid; grid-template-columns: 1fr 1fr; gap: 14px 24px; }
+    .fact b { display: block; font-size: 30px; font-weight: 600; }
+    .fact span { color: var(--dim); font-size: 19px; }
+    .stack { display: flex; flex-direction: column; gap: 14px; }
+
+    /* Work screen */
+    .top { display: flex; justify-content: space-between; align-items: baseline; }
+    .top .pass { font-size: 26px; font-weight: 600; }
+    .top .pass small { color: var(--dim); font-weight: 400; font-size: 22px; margin-left: 10px; }
+    .top .torque { font-size: 30px; font-weight: 700; color: var(--now); }
+    .mid { flex: 1; display: flex; align-items: center; gap: 24px; margin-top: 8px; }
+    svg { width: 300px; height: 300px; flex: none; }
+    .readout { flex: 1; }
+    .readout .label { color: var(--dim); font-size: 22px; }
+    .readout .num { font-size: 132px; line-height: .95; font-weight: 700; letter-spacing: -0.04em; color: var(--now); }
+    .readout .count { font-size: 24px; margin-top: 10px; }
+    .readout .next { color: var(--dim); font-size: 20px; margin-top: 6px; }
+    .actions { display: flex; gap: 14px; }
+    .actions .primary { flex: 1.6; justify-content: center; font-size: 30px; }
+    .actions .secondary { flex: 1; justify-content: center; }
+
+    /* Complete screen */
+    .ring-wrap { display: flex; align-items: center; gap: 28px; margin: 18px 0 auto; }
+    .ring { position: relative; width: 220px; height: 220px; flex: none; }
+    .ring svg { width: 220px; height: 220px; }
+    .ring .big { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+    .ring .big b { font-size: 54px; font-weight: 700; color: var(--ok); line-height: 1; }
+    .ring .big span { color: var(--dim); font-size: 19px; margin-top: 6px; }
+    .summary div { font-size: 24px; margin-bottom: 10px; text-indent: -26px; padding-left: 26px; }
+    .summary .ok::before { content: ""; display: inline-block; width: 14px; height: 14px; border-radius: 50%; background: var(--ok); margin-right: 12px; }
+    .summary .warn::before { content: ""; display: inline-block; width: 14px; height: 14px; border-radius: 50%; background: var(--flag); margin-right: 12px; }
+    .summary .meta { color: var(--dim); font-size: 20px; margin-top: 16px; }
+  </style>
+</head>
+<body>
+
+<!-- ───────────── Job ───────────── -->
+<section id="home" class="screen">
+  <h1 id="homeTitle">Flange torque</h1>
+  <div class="sub" id="homeSub"></div>
+  <div class="facts" id="facts"></div>
+  <div class="stack">
+    <button class="focusable primary" id="startBtn"></button>
+    <button class="focusable" id="voiceBtn"><span>Voice guidance</span><span class="hint" id="voiceState">On</span></button>
+    <button class="focusable" id="resetBtn" style="display:none"><span>Start over</span><span class="hint">Clears progress</span></button>
+  </div>
+</section>
+
+<!-- ───────────── Work ───────────── -->
+<section id="work" class="screen">
+  <div class="top">
+    <div class="pass"><span id="passName"></span><small id="passPct"></small></div>
+    <div class="torque" id="passTorque"></div>
+  </div>
+  <div class="mid">
+    <svg id="flange" viewBox="0 0 300 300" aria-hidden="true"></svg>
+    <div class="readout">
+      <div class="label">Bolt</div>
+      <div class="num" id="boltNum">1</div>
+      <div class="count" id="boltCount"></div>
+      <div class="next" id="boltNext"></div>
+    </div>
+  </div>
+  <div class="actions">
+    <button class="focusable primary" id="confirmBtn">Torqued</button>
+    <button class="focusable secondary" id="flagBtn">Flag</button>
+  </div>
+</section>
+
+<!-- ───────────── Complete ───────────── -->
+<section id="done" class="screen">
+  <h1>Flange complete</h1>
+  <div class="sub" id="doneSub"></div>
+  <div class="ring-wrap">
+    <div class="ring">
+      <svg viewBox="0 0 220 220" aria-hidden="true">
+        <circle cx="110" cy="110" r="98" fill="none" stroke="#2a323b" stroke-width="12"/>
+        <circle id="doneArc" cx="110" cy="110" r="98" fill="none" stroke="#52e07a" stroke-width="12"
+                stroke-linecap="round" transform="rotate(-90 110 110)"/>
+      </svg>
+      <div class="big"><b id="doneBig"></b><span>within spec</span></div>
+    </div>
+    <div class="summary" id="summary"></div>
+  </div>
+  <div class="stack">
+    <button class="focusable primary" id="finishBtn"><span>Done</span><span class="hint">Return to job</span></button>
+  </div>
+</section>
+
+<script>
+/* ────────────────────────────────────────────────────────────
+   Job configuration — swap this per flange / work order
+   ──────────────────────────────────────────────────────────── */
+const JOB = {
+  wo: 'WO-4502219',
+  flange: 'J03',
+  spec: 'ISO-2026-118',
+  bolts: 12,
+  target: 160,            // final torque
+  unit: 'ft·lb',
+  passes: [
+    { name: 'Pass 1', pct: 30 },
+    { name: 'Pass 2', pct: 60 },
+    { name: 'Pass 3', pct: 100 },
+    { name: 'Final check', pct: 100, circular: true }, // walk around in position order
+  ],
+};
+
+// Star (cross) pattern. Index = tightening order, value = angle from top, clockwise.
+// Matches ASME PCC-1 for a 12-bolt flange: 1,7,4,10,3,9,6,12,2,8,5,11.
+const STAR_12 = [0, 180, 90, 270, 60, 240, 150, 330, 30, 210, 120, 300];
+const STAR_8  = [0, 180, 90, 270, 45, 225, 135, 315];
+const STAR_ANGLES = { 8: STAR_8, 12: STAR_12 }[JOB.bolts] || STAR_12;
+
+// Circular order = same bolts sorted by angle (walk around the flange)
+const CIRC_ORDER = STAR_ANGLES.map((a, i) => ({ a, i })).sort((x, y) => x.a - y.a).map(o => o.i);
+
+const STORE_KEY = 'flange-torque-v1';
+
+/* ────────────────────────────────────────────────────────────
+   State
+   ──────────────────────────────────────────────────────────── */
+let state = loadState();
+
+function freshState() {
+  return {
+    v: 1, wo: JOB.wo, pass: 0, idx: 0, voice: true,
+    events: [],      // {pass, bolt, ok, t}
+    completedAt: null,
+  };
+}
+function loadState() {
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    if (!raw) return freshState();
+    const s = JSON.parse(raw);
+    if (s.v !== 1 || s.wo !== JOB.wo) return freshState();
+    return s;
+  } catch (e) { return freshState(); }
+}
+function saveState() {
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch (e) {}
+}
+
+const pass = () => JOB.passes[state.pass];
+const orderFor = p => (JOB.passes[p].circular ? CIRC_ORDER : STAR_ANGLES.map((_, i) => i));
+const currentBolt = () => orderFor(state.pass)[state.idx] + 1;          // 1-based label
+const torqueFor = p => Math.round(JOB.target * JOB.passes[p].pct / 100);
+const inProgress = () => state.events.length > 0 && !state.completedAt;
+const boltStatus = (p, bolt) => {                                       // 'ok' | 'flag' | null
+  const e = state.events.find(x => x.pass === p && x.bolt === bolt);
+  return e ? (e.ok ? 'ok' : 'flag') : null;
+};
+
+/* ────────────────────────────────────────────────────────────
+   Rendering
+   ──────────────────────────────────────────────────────────── */
+const $ = id => document.getElementById(id);
+
+function show(id) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.toggle('active', s.id === id));
+  requestAnimationFrame(() => {
+    const first = document.querySelector('.screen.active .focusable.primary') ||
+                  document.querySelector('.screen.active .focusable');
+    if (first) first.focus();
+  });
+}
+
+function renderHome() {
+  $('homeSub').innerHTML = `<span>${JOB.wo}</span><span>Flange ${JOB.flange}</span><span>${JOB.spec}</span>`;
+  $('facts').innerHTML = [
+    [JOB.bolts, 'bolts, star pattern'],
+    [`${JOB.target} ${JOB.unit}`, 'final torque'],
+    [`${JOB.passes.length} passes`, JOB.passes.map(p => p.circular ? 'check' : p.pct + '%').join(', ')],
+    [state.completedAt ? 'Complete' : inProgress() ? 'In progress' : 'Not started', 'status'],
+  ].map(([b, s]) => `<div class="fact"><b>${b}</b><span>${s}</span></div>`).join('');
+
+  if (inProgress()) {
+    $('startBtn').innerHTML = `<span>Resume</span><span class="hint">${pass().name}, bolt ${currentBolt()}</span>`;
+  } else if (state.completedAt) {
+    $('startBtn').innerHTML = `<span>View record</span><span class="hint">${JOB.bolts} of ${JOB.bolts} torqued</span>`;
+  } else {
+    $('startBtn').innerHTML = `<span>Start</span><span class="hint">Pass 1, ${torqueFor(0)} ${JOB.unit}</span>`;
+  }
+  $('voiceState').textContent = state.voice ? 'On' : 'Off';
+  $('resetBtn').style.display = (inProgress() || state.completedAt) ? '' : 'none';
+}
+
+function renderWork() {
+  const p = pass();
+  const bolt = currentBolt();
+  const order = orderFor(state.pass);
+  $('passName').textContent = p.name;
+  $('passPct').textContent = `${state.pass + 1} of ${JOB.passes.length}  ·  ${p.pct}%`;
+  $('passTorque').textContent = `${torqueFor(state.pass)} ${JOB.unit}`;
+  $('boltNum').textContent = bolt;
+  $('boltCount').textContent = `${state.idx + 1} of ${JOB.bolts}` + (p.circular ? ', walking around' : '');
+  const nxt = order[state.idx + 1];
+  $('boltNext').textContent = nxt !== undefined ? `Next: bolt ${nxt + 1}`
+    : (state.pass + 1 < JOB.passes.length ? `Next: ${JOB.passes[state.pass + 1].name}` : 'Last bolt');
+  drawFlange();
+}
+
+function drawFlange() {
+  const cx = 150, cy = 150, R = 118, r = 20;
+  const pt = i => {
+    const a = (STAR_ANGLES[i] - 90) * Math.PI / 180;
+    return [cx + R * Math.cos(a), cy + R * Math.sin(a)];
+  };
+  const bolt = currentBolt() - 1;
+  const order = orderFor(state.pass);
+  let s = `<circle cx="${cx}" cy="${cy}" r="142" fill="none" stroke="#2a323b" stroke-width="10"/>
+           <circle cx="${cx}" cy="${cy}" r="78" fill="none" stroke="#2a323b" stroke-width="6"/>`;
+  // path connecting the bolts done so far this pass (the star trace)
+  const done = order.slice(0, state.idx).map(pt);
+  if (done.length > 1) {
+    s += `<polyline points="${done.map(p => p.join(',')).join(' ')}" fill="none" stroke="#2f6b43" stroke-width="3"/>`;
+  }
+  if (done.length) {
+    const [x1, y1] = done[done.length - 1], [x2, y2] = pt(bolt);
+    s += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#35d6ff" stroke-width="3" stroke-dasharray="6 6"/>`;
+  }
+  for (let i = 0; i < JOB.bolts; i++) {
+    const [x, y] = pt(i);
+    const st = boltStatus(state.pass, i + 1);
+    let fill = '#000', stroke = '#5a6572', text = '#8a94a0', extra = '';
+    if (st === 'ok')   { fill = '#52e07a'; stroke = '#52e07a'; text = '#000'; }
+    if (st === 'flag') { fill = '#ffb347'; stroke = '#ffb347'; text = '#000'; }
+    if (i === bolt)    { fill = '#35d6ff'; stroke = '#35d6ff'; text = '#000';
+                         extra = `<circle cx="${x}" cy="${y}" r="${r + 9}" fill="none" stroke="#35d6ff" stroke-width="3" opacity=".6"/>`; }
+    s += `${extra}<circle cx="${x}" cy="${y}" r="${r}" fill="${fill}" stroke="${stroke}" stroke-width="3"/>
+          <text x="${x}" y="${y + 1}" text-anchor="middle" dominant-baseline="middle"
+                font-size="18" font-weight="700" fill="${text}">${i + 1}</text>`;
+  }
+  $('flange').innerHTML = s;
+}
+
+function renderDone() {
+  const total = JOB.bolts * JOB.passes.length;
+  const flags = state.events.filter(e => !e.ok);
+  const okFinal = JOB.bolts - flags.filter(e => e.pass === JOB.passes.length - 1).length;
+  $('doneSub').innerHTML = `<span>${JOB.wo}</span><span>Flange ${JOB.flange}</span><span>${JOB.spec}</span>`;
+  $('doneBig').textContent = `${okFinal}/${JOB.bolts}`;
+  const circ = 2 * Math.PI * 98;
+  $('doneArc').setAttribute('stroke-dasharray', `${circ * okFinal / JOB.bolts} ${circ}`);
+  const when = state.completedAt ? new Date(state.completedAt) : new Date();
+  $('summary').innerHTML =
+    `<div class="ok">${JOB.passes.length} passes, ${total} confirmations</div>` +
+    `<div class="ok">${JOB.target} ${JOB.unit} final, no turn on check pass</div>` +
+    (flags.length ? `<div class="warn">${flags.length} flagged: bolts ${[...new Set(flags.map(e => e.bolt))].join(', ')}</div>`
+                  : `<div class="ok">No flags</div>`) +
+    `<div class="meta">Record saved ${when.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</div>`;
+}
+
+/* ────────────────────────────────────────────────────────────
+   Actions
+   ──────────────────────────────────────────────────────────── */
+function speak(text) {
+  if (!state.voice || !('speechSynthesis' in window)) return;
+  try {
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = 'en-US'; u.rate = 1.05;
+    u.onerror = () => {};
+    speechSynthesis.speak(u);
+  } catch (e) {}
+}
+const sayBolt = () => speak(`Bolt ${currentBolt()}, ${torqueFor(state.pass)} ${JOB.unit === 'ft·lb' ? 'foot pounds' : JOB.unit}`);
+
+function record(ok) {
+  state.events.push({ pass: state.pass, bolt: currentBolt(), ok, t: Date.now() });
+  state.idx++;
+  if (state.idx >= JOB.bolts) {
+    state.idx = 0;
+    state.pass++;
+    if (state.pass >= JOB.passes.length) {
+      state.pass = JOB.passes.length - 1; state.idx = JOB.bolts - 1;
+      state.completedAt = Date.now();
+      saveState();
+      speak('Flange complete. Record saved.');
+      go({ screen: 'done' }, true);
+      return;
+    }
+    speak(`${pass().name}. ${torqueFor(state.pass)} foot pounds.`);
+    setTimeout(sayBolt, 1800);
+  } else {
+    sayBolt();
+  }
+  saveState();
+  renderWork();
+  $('confirmBtn').focus();
+}
+
+/* ────────────────────────────────────────────────────────────
+   Navigation — history entries so the Back gesture works
+   ──────────────────────────────────────────────────────────── */
+const HOME = { screen: 'home' };
+history.replaceState(HOME, '');
+
+function renderScreen(st) {
+  const s = (st && st.screen) || 'home';
+  if (s === 'home') renderHome();
+  if (s === 'work') renderWork();
+  if (s === 'done') renderDone();
+  show(s);
+}
+function go(st, replace) {
+  if (replace) history.replaceState(st, ''); else history.pushState(st, '');
+  renderScreen(st);
+}
+window.addEventListener('popstate', e => renderScreen(e.state || HOME));
+
+/* ────────────────────────────────────────────────────────────
+   D-pad input: arrows move focus, Enter activates
+   ──────────────────────────────────────────────────────────── */
+function focusables() {
+  return Array.from(document.querySelectorAll('.screen.active .focusable:not([disabled])'))
+    .filter(el => el.offsetParent !== null);
+}
+function moveFocus(dir) {
+  const list = focusables(); if (!list.length) return;
+  let i = list.indexOf(document.activeElement);
+  if (i === -1) { list[0].focus(); return; }
+  i = (dir < 0) ? (i > 0 ? i - 1 : list.length - 1) : (i < list.length - 1 ? i + 1 : 0);
+  list[i].focus();
+}
+document.addEventListener('keydown', e => {
+  switch (e.key) {
+    case 'ArrowUp': case 'ArrowLeft':  moveFocus(-1); break;
+    case 'ArrowDown': case 'ArrowRight': moveFocus(1); break;
+    case 'Enter':
+      if (document.activeElement && document.activeElement.classList.contains('focusable')) document.activeElement.click();
+      break;
+    case 'Escape': case 'Backspace': history.back(); break;   // desktop stand-in for the Back gesture
+    default: return;
+  }
+  e.preventDefault();
+});
+
+/* ────────────────────────────────────────────────────────────
+   Wire up
+   ──────────────────────────────────────────────────────────── */
+$('startBtn').addEventListener('click', () => {
+  if (state.completedAt) { go({ screen: 'done' }); return; }
+  go({ screen: 'work' });
+  sayBolt();
+});
+$('voiceBtn').addEventListener('click', () => {
+  state.voice = !state.voice; saveState(); renderHome();
+  if (state.voice) speak('Voice guidance on');
+});
+$('resetBtn').addEventListener('click', () => { state = freshState(); saveState(); renderHome(); $('startBtn').focus(); });
+$('confirmBtn').addEventListener('click', () => record(true));
+$('flagBtn').addEventListener('click', () => record(false));
+$('finishBtn').addEventListener('click', () => { history.back(); });
+
+renderScreen(HOME);
+</script>
+</body>
+</html>
